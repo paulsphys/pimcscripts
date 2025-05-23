@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/python3
 # reduce-one.py
 # Adrian Del Maestro
 # 09.03.2009
@@ -23,44 +23,43 @@ def line_counts(filename):
     '''Use wc to count the number of lines and header lines in a file. '''
     num_lines = int(subprocess.check_output(['wc', '-l', filename]).split()[0])
     num_header = str(subprocess.check_output(['head','-5',filename])).count('#')
+    # num_header = str(subprocess.check_output(['grep','-o','-i','\#',filename])).count('#')
     return num_header,num_lines
 
 # ----------------------------------------------------------------------
-def getStats(data,dim=0,weights=np.array([])):
+def getStats(data,dim=0):
     ''' Get the average and error of all columns in the data matrix. '''
 
     if data.ndim > dim:
         numBins  = data.shape[dim]
+        dataAve  = np.average(data,dim) 
+        try:
+            bins = MCstat.bin(data) 
+            dataErr = np.amax(bins,axis=0)
+        except:
+            dataAve2 = np.average(data*data,dim) 
+            dataErr = np.sqrt( abs(dataAve2-dataAve**2)/(1.0*numBins-1.0) ) 
 
-        # perform an unweighted average and compute the error via binning.
-        # Suitable for a single seed.
-        if weights.size == 0:
-            dataAve = np.average(data,axis=dim) 
-            try:
-                bins = MCstat.bin(data) 
-                dataErr = np.amax(bins,axis=0)
-            except:
-                dataErr = np.std(data, axis=dim)/np.sqrt(1.0*numBins-1.0)
+#        for n,d in enumerate(dataErr):
+#            if d > 2.0*dataErr2[n]:
+#                dataErr[n] = 2.0*dataErr2[n]
 
-        # perform the weighted average and unbiased standard weighted error (see
-        # https://stackoverflow.com/questions/2413522/weighted-standard-deviation-in-numpy/2415343#2415343)
-        else:
-            dataAve = np.average(data,weights=weights,axis=dim)
-            var = np.average((data-dataAve)**2, weights=weights,axis=dim)
-            dataErr = np.sqrt(var*np.sum(weights)/(np.sum(weights)-1))/np.sqrt(weights.size-1)
+#        try:
+#            bins = MCstat.bin(data) 
+#            dataErr = amax(bins,axis=0)
+#        except:
+#            dataErr   = sqrt( abs(dataAve2-dataAve**2)/(1.0*numBins-1.0) ) 
     else:
         dataAve = data
         dataErr = 0.0*data
-
     return dataAve,dataErr
 
 # -----------------------------------------------------------------------------
-def process_stats(fname,etype,skip,get_headers=False,ave_est=False):
+def process_stats(fname,skip,get_headers=False,ave_est=False):
     '''Get the average and error for a estimator file. '''
 
     # determine the structure of the headers
     num_headers,num_lines = line_counts(fname)
-
     # Get the number of lines to skip
     if isinstance(skip, float):
         cskip = int(num_lines*skip)+num_headers
@@ -76,43 +75,36 @@ def process_stats(fname,etype,skip,get_headers=False,ave_est=False):
 
     # Compute the averages and error
     else:
-
-        # We check if we are reducing merged files for different seeds, if so
-        # we need to perform a weighted average as different measurments may have
-        # different numbers of samples
-        try:
-            weights = np.loadtxt(fname.replace(etype,f'bins-{etype}'))
-            print("Performing weighted reduction average")
-        except:
-            weights = np.array([])
-
         if get_headers:
-            return getStats(np.loadtxt(fname,ndmin=2,skiprows=cskip),weights=weights),\
-        pimchelp.getHeadersFromFile(fname)
+            return getStats(np.loadtxt(fname,ndmin=2,skiprows=cskip)),pimchelp.getHeadersFromFile(fname)
         else:
-            return getStats(np.loadtxt(fname,ndmin=2,skiprows=cskip),weights=weights)
+            return getStats(np.loadtxt(fname,ndmin=2,skiprows=cskip))
 
 # -----------------------------------------------------------------------------
 def getScalarEst(etype,pimc,outName,reduceFlag,axis_labels,skip=0,
                  baseDir='',idList=None,ave_est=False):
     ''' Return the arrays containing the reduced averaged scalar
         estimators in question.'''
-
     fileNames = pimc.getFileList(etype,idList)
-
-    # we make sure that we have a valid list of filenames
     try:
-        headers = pimchelp.getHeadersFromFile(fileNames[0])
-
+        headlen = np.array([])	
+        # we make sure that we have a valid list of filenames
+        for i in range(len(fileNames)):
+    	    headlen = np.append(headlen,len(pimchelp.getHeadersFromFile(fileNames[i])))
+        ind = np.argmin(headlen)
+        headers = pimchelp.getHeadersFromFile(fileNames[ind])
+        #headers = pimchelp.getHeadersFromFile(fileNames[0])
         ave = np.zeros([len(fileNames),len(headers)],float)
         err = np.zeros([len(fileNames),len(headers)],float)
 
         # process all files in parallel
         nc = min(len(fileNames),num_cores)
-        results = Parallel(n_jobs=nc)(delayed(process_stats)(fname,etype,skip) for fname in fileNames)
+        results = Parallel(n_jobs=nc)(delayed(process_stats)(fname,skip) for fname in fileNames)
         for i,result in enumerate(results):
-            ave[i,:],err[i,:] = result
-
+            #print(result)
+            ave[i,:] = result[0][:len(headers)]
+            err[i,:] = result[1][:len(headers)]
+        
         # compute single centroid virial specific heat if possible
         # if 'dEdB' in headers:
         #     Cv = ave[:,headers.index('EEcv*Beta^2')] - ave[:,headers.index('Ecv*Beta')]**2 - ave[:,headers.index('dEdB')]
@@ -140,7 +132,6 @@ def getScalarEst(etype,pimc,outName,reduceFlag,axis_labels,skip=0,
         for head in headers:
             outFile.write('{:>16s}{:>16s}'.format(head,'Δ{:s}'.format(head)))
         outFile.write('\n')
-
         # the data
         for i,f in enumerate(fileNames):
             outFile.write('%16.8E' % float(pimc.params[pimc.id[i]][reduceFlag[1]]))
@@ -166,7 +157,6 @@ def getVectorEst(etype,pimc,outName,reduceFlag,axis_labels,skip=0,baseDir='',
 
     try:
         headers = pimchelp.getHeadersFromFile(fileNames[0],getEstimatorInfo=True)
-
         # We need to check if any information has been included in the header
         # i.e. is header a list of lists
         estInfo = ''
@@ -189,7 +179,7 @@ def getVectorEst(etype,pimc,outName,reduceFlag,axis_labels,skip=0,baseDir='',
 
         # process all files in parallel
         nc = min(len(fileNames),num_cores)
-        results = Parallel(n_jobs=nc)(delayed(process_stats)(fname,etype,skip,get_headers=True,ave_est=ave_est) 
+        results = Parallel(n_jobs=nc)(delayed(process_stats)(fname,skip,get_headers=True,ave_est=ave_est) 
                                    for fname in fileNames)
 
         # collect the results
@@ -289,11 +279,9 @@ def getKappa(pimc,outName,reduceFlag,skip=0,baseDir=''):
     return aveKappa,errKappa
 
 # -----------------------------------------------------------------------------
-def getISFEst(pimc,outName,reduceFlag,axis_labels,skip=0,baseDir='',
-              idList=None,ave_est=False):
+def getISFEst(etype,pimc,outName,reduceFlag,axis_labels,skip=0,baseDir='',idList=None,ave_est=False):
     ''' Return the arrays consisting of the reduced averaged intermediate
-        scattering function. '''
-
+        scattering function. '''        
     try:    
         xlab,ylab = axis_labels
         fileNames = pimc.getFileList('isf',idList)
@@ -301,18 +289,29 @@ def getISFEst(pimc,outName,reduceFlag,axis_labels,skip=0,baseDir='',
         # get the number of time slices
         pimcID = pimc.getID(fileNames[0])
         numTimeSlices = int(pimc.params[pimcID]['Number Time Slices'])
-
+        #print(numtTimeSlices)
+        #paramsMap = pimchelp.getParFromPIMCFile(fileNames[0])
+    
         # get information on the q-values from the header
         with open(fileNames[0],'r') as inFile:
             lines = inFile.readlines()
-            qvals = lines[1].lstrip('#').rstrip('\n').split()
-            tvals = lines[2].lstrip('#').rstrip('\n').split()
-
+            vals = lines[1].lstrip('#').rstrip('\n').split()
+    
         numParams = len(fileNames)
-
-        Nq = len(qvals)
-        Nx = int(len(tvals)/Nq) + 1
-
+        
+        #Calculate Nq and Nx
+        #print(paramsMap)
+        #Nx = 1/(paramsMap['T'] * paramsMap['tau'])
+        Nx = int((numTimeSlices/2.0)) + 1
+        Nv = len(vals)
+        Nq = int(Nv/Nx)
+        Nqmax = (Nq - 1) / 2
+        #Construct the q-vals array 
+        #qvals = np.arange(-Nqmax,Nqmax+1,1)*2*np.pi/paramsMap['V']
+        qvals = np.arange(0,Nq,1)
+        #print(len(qvals))
+        tvals = np.tile(np.arange(0,Nx,1),Nq)
+        #print(Nv,Nq,Nx)
         ave = np.zeros([Nq,numParams,Nx],float)
         err = np.zeros([Nq,numParams,Nx],float)
 
@@ -320,44 +319,43 @@ def getISFEst(pimc,outName,reduceFlag,axis_labels,skip=0,baseDir='',
 
             # load all the data
             isf_data = np.loadtxt(fname)
-
+            #print(isf_data.shape)
             # break into pieces corresonding to each q
             isf = {}
             τ = {}
             for j,cq in enumerate(qvals):
-                isf[cq] = isf_data[skip:,numTimeSlices*j:(j+1)*numTimeSlices]
-                τ[cq] = np.array([float(cτ) for cτ in tvals[numTimeSlices*j:(j+1)*numTimeSlices]])
-            
-            # add duplicate entry for tau = 1/T and get the averages and error
-            for j,cq in enumerate(qvals):
-                isf[cq] = np.hstack((isf[cq],isf[cq][:,:1]))
-                τ[cq] = np.append(τ[cq],τ[cq][1] + τ[cq][-1])
 
+                isf[cq] = isf_data[skip:,Nx*j:(j+1)*Nx]
+                τ[cq] = np.array([float(cτ) for cτ in tvals[Nx*j:(j+1)*Nx]])
+                #print(τ[cq]) 
+                #print(isf[cq].shape)
                 # Get the estimator data and compute averages
+                #print(getStats(isf[cq]))
                 ave[j,i,:],err[j,i,:] = getStats(isf[cq])
 
         # output the vector data to disk
         outFileName = baseDir+'%s-%s' % ('isf',outName)
-
         # the param and data headers
         header_q = ''
         header_p = ''
         header_d = ''
         for cq in qvals:
-            header_q += '{:^48}'.format('q = {:s}'.format(cq))
+            header_q += '{:^48}'.format('q = {:s}'.format(str(cq)))
             for j in range(numParams):
                 lab = '%s = %4.2f' % (reduceFlag[0],float(pimc.params[pimc.id[j]][reduceFlag[1]]))
                 header_p += '{:^48s}'.format(lab)
                 header_d += '{:>16s}{:>16s}{:>16s}'.format(xlab,ylab,'Δ'+ylab)
-
+    
         header = '# ' + header_q[2:] + '\n' + '# ' + header_p[2:] + '\n' + '# ' + header_d[2:]
-
+    
         # collapse the data
         out_data = []
         for i,cq in enumerate(qvals):
             for j in range(numParams):
+                #print(len(τ[cq]),len(ave[i,j,:]))
                 out_data.append(np.vstack((τ[cq],ave[i,j,:],err[i,j,:])).T)
-
+            
+    
         out_data = np.hstack(out_data)
         np.savetxt(outFileName,out_data,delimiter='',comments='', header=header,fmt='% 16.8E')
         return 0,0,0,len(fileNames)
@@ -372,7 +370,7 @@ def getISFEst(pimc,outName,reduceFlag,axis_labels,skip=0,baseDir='',
 # Begin Main Program 
 # -----------------------------------------------------------------------------
 def main():
-
+    	
     # define the mapping between short names and label names 
     shortFlags = ['n','T','N','t','u','V','L','D','q']
     parMap = {'n':'Initial Density', 'T':'Temperature', 'N':'Initial Number Particles',
@@ -466,7 +464,7 @@ def main():
             getEst[est] = getISFEst
         else:
             getEst[est] = getVectorEst
-
+    
     # setup the x- and y-labels
     axis_label = {'obdm':['r [Å]','n(r)'], 'pair':['r [Å]','g(r)'], 
                    'radial':['r [Å]','ρ(r)'], 'number':['N','P(N)'],
@@ -495,9 +493,9 @@ def main():
     # perform the reduction
     for est in est_do:
         ave_est = 'ave' in est
-        est_return = getEst[est](est,pimc,outName,reduceFlag,axis_label[est],
-                                 skip=skip, baseDir=baseDir,
+        est_return = getEst[est](est,pimc,outName,reduceFlag,axis_label[est],skip=skip,baseDir=baseDir,
                                  idList=args.pimcid,ave_est=ave_est)
+        
         if est_return[-1]:
             print(f'Reduced {est} over {est_return[-1]} {parMap[args.reduce]} value(s).')
 
